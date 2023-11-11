@@ -1,4 +1,8 @@
-ARG ARCH=arm32v7
+##
+# Development image
+##
+ARG ARCH=amd64
+# ARG ARCH=arm32v7
 ARG BASE_IMAGE=${ARCH}/node:16.17.1-bullseye
 
 FROM ${BASE_IMAGE} AS development
@@ -39,7 +43,40 @@ ENTRYPOINT [ "/app/docker-entrypoint.sh" ]
 ##
 FROM development AS build
 COPY . /app
-
+RUN lerna init
 RUN yarn install --immutable && \
    lerna run tsc &&  \
    lerna run build
+
+##
+# Production image
+##
+FROM ${BASE_IMAGE}-slim AS production
+ENV RPi3_APP_HOME=/app/.home/
+ENV NODE_ENV=production
+
+COPY --from=build /usr/bin/dumb-init /usr/bin/dumb-init
+
+RUN apt update && apt install -y --no-install-recommends curl ca-certificates
+RUN curl -s -o- https://packagecloud.io/install/repositories/ookla/speedtest-cli/script.deb.sh | bash
+RUN apt install -y --no-install-recommends \
+  procps \
+  speedtest
+
+RUN npm install -g \
+  pm2@5.2.0
+
+WORKDIR /app
+COPY --chown=node:node --from=build /app/.version /app
+# roaster-app
+COPY --chown=node:node --from=build /app/node_modules /app/node_modules
+COPY --chown=node:node --from=build /app/packages/app-backend/dist /app
+COPY --chown=node:node --from=build /app/packages/app-backend/config.yaml /app
+# app-frontend
+COPY --chown=node:node --from=build /app/packages/app-frontend/dist /app/app-frontend/dist
+
+COPY --chown=node:node --from=build /app/ecosystem.prod.config.js /app
+
+RUN chown -R node:node /app
+USER node
+CMD ["pm2-runtime", "start", "ecosystem.prod.config.js"]
