@@ -1,82 +1,40 @@
-##
-# Development image
-##
-ARG ARCH=amd64
-# ARG ARCH=arm32v7
-ARG BASE_IMAGE=${ARCH}/node:16.17.1-bullseye
+# Stage 1: Run build stage
+FROM node:lts-alpine as build-stage
+# FROM node:20.9.0-alpine as build-stage
+# FROM node:19.5.0-alpine
 
-FROM ${BASE_IMAGE} AS development
+# install simple http server for serving static content
+# RUN npm install -g http-server
 
-ENV RPi3_APP_HOME=/app/.home/
-ENV NODE_ENV=development
+# make the 'app' folder the current working directory
 WORKDIR /app
+# copy both 'package.json' and 'package-lock.json' (if available)
+COPY packages/frontend/package*.json ./
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
-  dumb-init \
-  python2 \
-  python3 \
-  build-essential \
-  linux-perf
+# install project dependencies
+RUN npm install
 
-RUN apt-get install -y --no-install-recommends \
-  libcairo2-dev \
-  libjpeg-dev \
-  libgif-dev \
-  libpango1.0-dev
+# copy project files and folders to the current working directory (i.e. 'app' folder)
+COPY . .
+COPY packages/frontend .
 
-RUN rm -f /usr/local/bin/yarn /usr/local/bin/yarnpkg && \
-  npm install -g \
-    npm@8.19.2 \
-    yarn@1.22.19 \
-    lerna@6.0.1 \
-    typescript@4.8.4 \
-    pm2@5.2.0
+# build app for production with minification
+RUN npm run build
 
+COPY packages/frontend/dist .
+
+# SHELL ["/bin/bash", "-c"]
+# EXPOSE 8080
+# CMD [ "http-server", "dist" ]
+
+# production stage
+FROM nginx:1.25-alpine-slim as production-stage
+WORKDIR /usr/share/nginx/html
+RUN rm -rf ./*
+COPY --from=build-stage /app/dist .
 SHELL ["/bin/bash", "-c"]
-EXPOSE 8000/tcp 8080/tcp 7000/tcp
+EXPOSE 8080/tcp
+# CMD ["nginx", "-g", "daemon off;"]
+ENTRYPOINT ["nginx", "-g", "daemon off;"]
 
-COPY ./docker-entrypoint.sh /app
-ENTRYPOINT [ "/app/docker-entrypoint.sh" ]
-
-##
-# Build image
-##
-FROM development AS build
-COPY . /app
-RUN lerna init
-RUN yarn install --immutable && \
-   lerna run tsc &&  \
-   lerna run build
-
-##
-# Production image
-##
-FROM ${BASE_IMAGE}-slim AS production
-ENV RPi3_APP_HOME=/app/.home/
-ENV NODE_ENV=production
-
-COPY --from=build /usr/bin/dumb-init /usr/bin/dumb-init
-
-RUN apt update && apt install -y --no-install-recommends curl ca-certificates
-RUN curl -s -o- https://packagecloud.io/install/repositories/ookla/speedtest-cli/script.deb.sh | bash
-RUN apt install -y --no-install-recommends \
-  procps \
-  speedtest
-
-RUN npm install -g \
-  pm2@5.2.0
-
-WORKDIR /app
-COPY --chown=node:node --from=build /app/.version /app
-# roaster-app
-COPY --chown=node:node --from=build /app/node_modules /app/node_modules
-COPY --chown=node:node --from=build /app/packages/app-backend/dist /app
-COPY --chown=node:node --from=build /app/packages/app-backend/config.yaml /app
-# app-frontend
-COPY --chown=node:node --from=build /app/packages/app-frontend/dist /app/app-frontend/dist
-
-COPY --chown=node:node --from=build /app/ecosystem.prod.config.js /app
-
-RUN chown -R node:node /app
-USER node
-CMD ["pm2-runtime", "start", "ecosystem.prod.config.js"]
+# ENTRYPOINT [ "/app/docker-entrypoint.sh" ]
